@@ -1,6 +1,8 @@
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
 
+import '../utils/recurrence.dart';
+
 class DatabaseHelper {
   static Database? _database;
 
@@ -23,7 +25,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 4,
+      version: 5,
       onCreate: (database, version) async {
         await database.execute('''
           CREATE TABLE expenses (
@@ -58,8 +60,9 @@ class DatabaseHelper {
             description TEXT NOT NULL,
             category TEXT NOT NULL,
             frequency TEXT NOT NULL,
-            nextDueDate TEXT NOT NULL
-           )
+            nextDueDate TEXT NOT NULL,
+            anchorDay INTEGER
+          )
         ''');
       },
       onUpgrade: (database, oldVersion, newVersion) async {
@@ -95,6 +98,12 @@ class DatabaseHelper {
     )
   ''');
 }
+
+        if (oldVersion < 5) {
+          await database.execute(
+            'ALTER TABLE recurring_bills ADD COLUMN anchorDay INTEGER',
+          );
+        }
       },
     );
   }
@@ -119,27 +128,122 @@ class DatabaseHelper {
     );
   }
 
-  static Future<double> getTotalExpenses() async {
+  /// Start (inclusive) and end (exclusive) of [month]'s calendar month
+  /// (the current month if null), as ISO strings comparable with the stored
+  /// `date` columns.
+  static List<String> _monthRange([DateTime? month]) {
+    final date = month ?? DateTime.now();
+
+    return [
+      DateTime(date.year, date.month, 1).toIso8601String(),
+      DateTime(date.year, date.month + 1, 1).toIso8601String(),
+    ];
+  }
+
+  static Future<double> _sum(
+    String table, {
+    DateTime? month,
+    bool allTime = false,
+  }) async {
     final database = await DatabaseHelper.database;
 
-    final now = DateTime.now();
-
-    final startOfMonth = DateTime(
-      now.year,
-      now.month,
-      1,
-    );
-
-    final result = await database.rawQuery(
-      '''
-      SELECT SUM(amount) as total
-      FROM expenses
-      WHERE date >= ?
-      ''',
-      [startOfMonth.toIso8601String()],
-    );
+    final result = allTime
+        ? await database.rawQuery(
+            'SELECT SUM(amount) as total FROM $table',
+          )
+        : await database.rawQuery(
+            'SELECT SUM(amount) as total FROM $table WHERE date >= ? AND date < ?',
+            _monthRange(month),
+          );
 
     return (result.first['total'] as num?)?.toDouble() ?? 0.0;
+  }
+
+  /// Total spent in [month] (the current month if null).
+  static Future<double> getTotalExpenses({DateTime? month}) =>
+      _sum('expenses', month: month);
+
+  /// Total income in [month] (the current month if null).
+  static Future<double> getTotalIncome({DateTime? month}) =>
+      _sum('income', month: month);
+
+  /// All-time income minus all-time expenses.
+  static Future<double> getBalance() async {
+    final income = await _sum('income', allTime: true);
+    final expenses = await _sum('expenses', allTime: true);
+
+    return income - expenses;
+  }
+
+  /// Expenses and income together, newest first. Each row has a `type` of
+  /// 'expense' or 'income'; income rows use 'Income' as their category.
+  static Future<List<Map<String, dynamic>>> getTransactions({
+    int? limit,
+  }) async {
+    final database = await DatabaseHelper.database;
+
+    return await database.rawQuery(
+      '''
+      SELECT id, amount, description, category, date, 'expense' AS type
+      FROM expenses
+      UNION ALL
+      SELECT id, amount, description, 'Income' AS category, date, 'income' AS type
+      FROM income
+      ORDER BY date DESC
+      ${limit != null ? 'LIMIT $limit' : ''}
+      ''',
+    );
+  }
+
+  static Future<String?> getSetting(String key) async {
+    final database = await DatabaseHelper.database;
+
+    final result = await database.query(
+      'settings',
+      where: 'key = ?',
+      whereArgs: [key],
+      limit: 1,
+    );
+
+    return result.isEmpty ? null : result.first['value'].toString();
+  }
+
+  static Future<void> setSetting(String key, String value) async {
+    final database = await DatabaseHelper.database;
+
+    await database.insert(
+      'settings',
+      {
+        'key': key,
+        'value': value,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// Settings that survive "Clear all data": who the user is and their
+  /// preferences, as opposed to their financial data.
+  static const _keptSettings = [
+    'user_name',
+    'onboarding_done',
+    'notifications_enabled',
+  ];
+
+  /// Deletes every expense, income, recurring bill, the budget and the
+  /// budget-alert state.
+  static Future<void> clearAllData() async {
+    final database = await DatabaseHelper.database;
+
+    await database.transaction((txn) async {
+      await txn.delete('expenses');
+      await txn.delete('income');
+      await txn.delete('recurring_bills');
+      await txn.delete(
+        'settings',
+        where: 'key NOT IN (${List.filled(_keptSettings.length, '?').join(', ')})',
+        whereArgs: _keptSettings,
+      );
+    });
   }
 
   static Future<void> saveBudget(double budget) async {
@@ -216,26 +320,22 @@ class DatabaseHelper {
     );
   }
 
-  static Future<List<Map<String, dynamic>>> getCategoryTotals() async {
+  /// Spending per category in [month] (the current month if null),
+  /// largest first.
+  static Future<List<Map<String, dynamic>>> getCategoryTotals({
+    DateTime? month,
+  }) async {
     final database = await DatabaseHelper.database;
-
-    final now = DateTime.now();
-
-    final startOfMonth = DateTime(
-      now.year,
-      now.month,
-      1,
-    );
 
     return await database.rawQuery(
       '''
       SELECT category, SUM(amount) as total
       FROM expenses
-      WHERE date >= ?
+      WHERE date >= ? AND date < ?
       GROUP BY category
       ORDER BY total DESC
       ''',
-      [startOfMonth.toIso8601String()],
+      _monthRange(month),
     );
   }
 
@@ -280,29 +380,6 @@ class DatabaseHelper {
       'income',
       orderBy: 'date DESC',
     );
-  }
-
-  static Future<double> getTotalIncome() async {
-    final database = await DatabaseHelper.database;
-
-    final now = DateTime.now();
-
-    final startOfMonth = DateTime(
-      now.year,
-      now.month,
-      1,
-    );
-
-    final result = await database.rawQuery(
-      '''
-      SELECT SUM(amount) as total
-      FROM income
-      WHERE date >= ?
-      ''',
-      [startOfMonth.toIso8601String()],
-    );
-
-    return (result.first['total'] as num?)?.toDouble() ?? 0.0;
   }
 
   static Future<int> deleteIncome(int id) async {
@@ -371,68 +448,55 @@ class DatabaseHelper {
     );
   }
   
+  /// Records an expense for every recurring bill payment that has fallen due,
+  /// including several missed periods if the app was not opened for a while,
+  /// and moves each bill's next due date forward.
   static Future<void> processRecurringBills() async {
-  final database = await DatabaseHelper.database;
+    final database = await DatabaseHelper.database;
 
-  final now = DateTime.now();
+    final now = DateTime.now();
 
-  final bills = await database.query(
-    'recurring_bills',
-    where: 'nextDueDate <= ?',
-    whereArgs: [now.toIso8601String()],
-  );
+    await database.transaction((txn) async {
+      final bills = await txn.query(
+        'recurring_bills',
+        where: 'nextDueDate <= ?',
+        whereArgs: [now.toIso8601String()],
+      );
 
-  for (final bill in bills) {
-    await database.insert(
-      'expenses',
-      {
-        'amount': bill['amount'],
-        'description': bill['description'],
-        'category': bill['category'],
-        'date': now.toIso8601String(),
-      },
-    );
+      for (final bill in bills) {
+        final frequency = bill['frequency'].toString();
 
-    final currentDueDate = DateTime.parse(
-      bill['nextDueDate'].toString(),
-    );
-
-    DateTime nextDueDate;
-
-    switch (bill['frequency']) {
-      case 'Weekly':
-        nextDueDate = currentDueDate.add(
-          const Duration(days: 7),
+        var dueDate = DateTime.parse(
+          bill['nextDueDate'].toString(),
         );
-        break;
 
-      case 'Yearly':
-        nextDueDate = DateTime(
-          currentDueDate.year + 1,
-          currentDueDate.month,
-          currentDueDate.day,
+        final anchorDay = (bill['anchorDay'] as int?) ?? dueDate.day;
+
+        while (!dueDate.isAfter(now)) {
+          await txn.insert(
+            'expenses',
+            {
+              'amount': bill['amount'],
+              'description': bill['description'],
+              'category': bill['category'],
+              'date': dueDate.toIso8601String(),
+            },
+          );
+
+          dueDate = calculateNextDueDate(dueDate, frequency, anchorDay);
+        }
+
+        await txn.update(
+          'recurring_bills',
+          {
+            'nextDueDate': dueDate.toIso8601String(),
+            'anchorDay': anchorDay,
+          },
+          where: 'id = ?',
+          whereArgs: [bill['id']],
         );
-        break;
-
-      case 'Monthly':
-      default:
-        nextDueDate = DateTime(
-          currentDueDate.year,
-          currentDueDate.month + 1,
-          currentDueDate.day,
-        );
-        break;
-    }
-
-    await database.update(
-      'recurring_bills',
-      {
-        'nextDueDate': nextDueDate.toIso8601String(),
-      },
-      where: 'id = ?',
-      whereArgs: [bill['id']],
-    );
-  }
+      }
+    });
   }
 
   static Future<void> checkAndResetBudgetAlerts() async {

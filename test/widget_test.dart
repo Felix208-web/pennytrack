@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:pennytrack/main.dart';
+import 'package:pennytrack/utils/formatters.dart';
 import 'package:pennytrack/utils/recurrence.dart';
 
 void main() {

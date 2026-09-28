@@ -168,6 +168,26 @@ class DatabaseHelper {
     return income - expenses;
   }
 
+  /// Expenses and income together, newest first. Each row has a `type` of
+  /// 'expense' or 'income'; income rows use 'Income' as their category.
+  static Future<List<Map<String, dynamic>>> getTransactions({
+    int? limit,
+  }) async {
+    final database = await DatabaseHelper.database;
+
+    return await database.rawQuery(
+      '''
+      SELECT id, amount, description, category, date, 'expense' AS type
+      FROM expenses
+      UNION ALL
+      SELECT id, amount, description, 'Income' AS category, date, 'income' AS type
+      FROM income
+      ORDER BY date DESC
+      ${limit != null ? 'LIMIT $limit' : ''}
+      ''',
+    );
+  }
+
   static Future<void> saveBudget(double budget) async {
     final database = await DatabaseHelper.database;
 

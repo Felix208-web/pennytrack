@@ -1,30 +1,74 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:pennytrack/main.dart';
+import 'package:pennytrack/utils/recurrence.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const PennyTrackApp());
+  group('formatNaira', () {
+    test('adds thousands separators', () {
+      expect(formatNaira(0), '₦0');
+      expect(formatNaira(950), '₦950');
+      expect(formatNaira(1500), '₦1,500');
+      expect(formatNaira(1234567), '₦1,234,567');
+    });
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    test('puts the minus sign before the currency symbol', () {
+      expect(formatNaira(-5000), '-₦5,000');
+    });
+  });
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
+  group('parseAmount', () {
+    test('accepts positive numbers, with or without commas', () {
+      expect(parseAmount('2500'), 2500);
+      expect(parseAmount(' 10,000.50 '), 10000.5);
+    });
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    test('rejects empty, zero, negative and non-numeric input', () {
+      expect(parseAmount(''), isNull);
+      expect(parseAmount('0'), isNull);
+      expect(parseAmount('-200'), isNull);
+      expect(parseAmount('abc'), isNull);
+    });
+  });
+
+  group('calculateNextDueDate', () {
+    test('weekly adds seven days, across month ends', () {
+      expect(
+        calculateNextDueDate(DateTime(2026, 9, 28), 'Weekly', 28),
+        DateTime(2026, 10, 5),
+      );
+    });
+
+    test('monthly clamps to the last day of short months', () {
+      expect(
+        calculateNextDueDate(DateTime(2026, 1, 31), 'Monthly', 31),
+        DateTime(2026, 2, 28),
+      );
+      expect(
+        calculateNextDueDate(DateTime(2028, 1, 31), 'Monthly', 31),
+        DateTime(2028, 2, 29),
+      );
+    });
+
+    test('monthly returns to the anchor day after a short month', () {
+      expect(
+        calculateNextDueDate(DateTime(2026, 2, 28), 'Monthly', 31),
+        DateTime(2026, 3, 31),
+      );
+    });
+
+    test('monthly rolls over into the next year', () {
+      expect(
+        calculateNextDueDate(DateTime(2026, 12, 15), 'Monthly', 15),
+        DateTime(2027, 1, 15),
+      );
+    });
+
+    test('yearly handles 29 February', () {
+      expect(
+        calculateNextDueDate(DateTime(2028, 2, 29), 'Yearly', 29),
+        DateTime(2029, 2, 28),
+      );
+    });
   });
 }

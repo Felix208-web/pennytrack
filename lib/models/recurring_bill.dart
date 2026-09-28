@@ -23,6 +23,7 @@ class RecurringBill {
       'category': category,
       'frequency': frequency,
       'nextDueDate': nextDueDate.toIso8601String(),
+      'anchorDay': nextDueDate.day,
     };
   }
 }

@@ -5,11 +5,42 @@ import 'models/income.dart';
 import 'models/recurring_bill.dart';
 import 'services/notification_service.dart';
 
+const List<String> expenseCategories = [
+  'Food',
+  'Transport',
+  'Bills',
+  'Shopping',
+  'Other',
+];
+
+List<DropdownMenuItem<String>> categoryDropdownItems() {
+  return expenseCategories
+      .map(
+        (category) => DropdownMenuItem(
+          value: category,
+          child: Text(category),
+        ),
+      )
+      .toList();
+}
+
 String formatNaira(double amount) {
-  return '₦${amount.toStringAsFixed(0).replaceAllMapped(
-    RegExp(r'\B(?=(\d{3})+(?!\d))'),
-    (match) => ',',
-  )}';
+  final digits = amount.abs().toStringAsFixed(0).replaceAllMapped(
+        RegExp(r'\B(?=(\d{3})+(?!\d))'),
+        (match) => ',',
+      );
+
+  return '${amount.round() < 0 ? '-' : ''}₦$digits';
+}
+
+/// Parses a user-entered amount, allowing thousands separators.
+/// Returns null unless the amount is a positive number.
+double? parseAmount(String text) {
+  final value = double.tryParse(text.replaceAll(',', '').trim());
+
+  if (value == null || value <= 0) return null;
+
+  return value;
 }
 
 String formatExpenseDate(String dateString) {
@@ -132,6 +163,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   late Future<List<Map<String, dynamic>>> categoryTotalsFuture;
   late Future<double> totalIncomeFuture;
   late Future<List<Map<String, dynamic>>> incomeFuture;
+  late Future<double> balanceFuture;
 
   double monthlyBudget = 100000;
   String searchQuery = '';
@@ -163,9 +195,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
           ElevatedButton(
             onPressed: () {
-              final value = double.tryParse(controller.text);
+              final value = parseAmount(controller.text);
 
-              if (value != null && value > 0) {
+              if (value != null) {
                 Navigator.pop(context, value);
               }
             },
@@ -179,16 +211,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
   if (newBudget != null) {
   await DatabaseHelper.saveBudget(newBudget);
 
+  if (!mounted) return;
+
   setState(() {
     monthlyBudget = newBudget;
   });
+
+  await NotificationService.checkBudget();
 }
 }
 
 Future<void> loadSavedBudget() async {
   final savedBudget = await DatabaseHelper.getSavedBudget();
 
-  if (savedBudget != null) {
+  if (savedBudget != null && mounted) {
     setState(() {
       monthlyBudget = savedBudget;
     });
@@ -199,47 +235,34 @@ Future<void> loadSavedBudget() async {
 void initState() {
   super.initState();
 
-  processRecurringBills();
-  checkUpcomingBills();
-  DatabaseHelper.checkAndResetBudgetAlerts();
+  _loadData();
+  loadSavedBudget();
+  _startup();
+}
 
+/// Points every dashboard future at fresh database queries.
+void _loadData() {
   expensesFuture = DatabaseHelper.getExpenses();
   totalExpensesFuture = DatabaseHelper.getTotalExpenses();
   totalIncomeFuture = DatabaseHelper.getTotalIncome();
   incomeFuture = DatabaseHelper.getIncome();
   categoryTotalsFuture = DatabaseHelper.getCategoryTotals();
-
-  loadSavedBudget();
+  balanceFuture = DatabaseHelper.getBalance();
 }
 
-Future<void> checkUpcomingBills() async {
-  final bills = await DatabaseHelper.getRecurringBills();
+void refreshDashboard() {
+  if (!mounted) return;
 
-  final tomorrow = DateTime.now().add(
-    const Duration(days: 1),
-  );
-
-  for (final bill in bills) {
-    final dueDate = DateTime.parse(
-      bill['nextDueDate'].toString(),
-    );
-
-    final isDueTomorrow =
-        dueDate.year == tomorrow.year &&
-        dueDate.month == tomorrow.month &&
-        dueDate.day == tomorrow.day;
-
-    if (isDueTomorrow) {
-      await NotificationService.showNotification(
-        id: bill['id'] as int,
-        title: 'Upcoming Bill',
-        body:
-            '${bill['description']} of ${formatNaira((bill['amount'] as num).toDouble())} is due tomorrow.',
-      );
-    }
-  }
+  setState(_loadData);
 }
 
+Future<void> _startup() async {
+  await DatabaseHelper.checkAndResetBudgetAlerts();
+  await processRecurringBills();
+}
+
+/// Records due recurring bills as expenses, reschedules their reminders,
+/// then refreshes the dashboard and re-checks the budget.
 Future<void> processRecurringBills() async {
   await DatabaseHelper.processRecurringBills();
 
@@ -256,13 +279,9 @@ Future<void> processRecurringBills() async {
     );
   }
 
-  if (!mounted) return;
+  await NotificationService.checkBudget();
 
-  setState(() {
-    expensesFuture = DatabaseHelper.getExpenses();
-    totalExpensesFuture = DatabaseHelper.getTotalExpenses();
-    categoryTotalsFuture = DatabaseHelper.getCategoryTotals();
-  });
+  refreshDashboard();
 }
 
 @override
@@ -286,7 +305,9 @@ Widget build(BuildContext context) {
     body: FutureBuilder<List<Map<String, dynamic>>>(
       future: expensesFuture,
       builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
+        // Only show the spinner on first load; refreshes keep the old data
+        // on screen instead of replacing the whole dashboard.
+        if (!snapshot.hasData && !snapshot.hasError) {
           return const Center(
             child: CircularProgressIndicator(),
           );
@@ -365,15 +386,9 @@ Widget build(BuildContext context) {
                             const SizedBox(height: 8),
 
                             FutureBuilder<double>(
-                              future: Future.wait([
-                                totalIncomeFuture,
-                                totalExpensesFuture,
-                              ]).then(
-                                (values) => values[0] - values[1],
-                              ),
+                              future: balanceFuture,
                               builder: (context, snapshot) {
-                                if (snapshot.connectionState ==
-                                    ConnectionState.waiting) {
+                                if (!snapshot.hasData) {
                                   return const Text(
                                     '₦...',
                                     style: TextStyle(
@@ -415,14 +430,7 @@ Widget build(BuildContext context) {
                                   ),
                                 );
 
-                                if (!mounted) return;
-
-                                setState(() {
-                                  totalIncomeFuture =
-                                      DatabaseHelper.getTotalIncome();
-                                  incomeFuture =
-                                      DatabaseHelper.getIncome();
-                                });
+                                refreshDashboard();
                               },
                               icon: const Icon(
                                 Icons.add,
@@ -445,7 +453,7 @@ Widget build(BuildContext context) {
                           const SizedBox(height: 12),
 
                           Text(
-                            'Total Income',
+                            'Income this month',
                             style: TextStyle(
                               color: Colors.grey[600],
                               fontSize: 13,
@@ -457,8 +465,7 @@ Widget build(BuildContext context) {
                           FutureBuilder<double>(
                             future: totalIncomeFuture,
                             builder: (context, snapshot) {
-                              if (snapshot.connectionState ==
-                                  ConnectionState.waiting) {
+                              if (!snapshot.hasData) {
                                 return const Text(
                                   '₦...',
                                   style: TextStyle(
@@ -743,7 +750,7 @@ FutureBuilder<List<Map<String, dynamic>>>(
               const SizedBox(height: 8),
 
               SizedBox(
-  width: 275,
+  width: double.infinity,
   child: LinearProgressIndicator(
     value: percentage,
     minHeight: 6,
@@ -766,32 +773,11 @@ SizedBox(
       await Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (context) => const AddIncomeScreen(),
-        ),
-      );
-
-      setState(() {
-        totalIncomeFuture = DatabaseHelper.getTotalIncome();
-        totalExpensesFuture = DatabaseHelper.getTotalExpenses();
-      });
-    },
-    icon: const Icon(Icons.account_balance_wallet),
-    label: const Text('Add Income'),
-  ),
-),
-
-const SizedBox(height: 8),
-
-SizedBox(
-  width: double.infinity,
-  child: OutlinedButton.icon(
-    onPressed: () {
-      Navigator.push(
-        context,
-        MaterialPageRoute(
           builder: (context) => const IncomeScreen(),
         ),
       );
+
+      refreshDashboard();
     },
     icon: const Icon(Icons.list_alt),
     label: const Text('View Income'),
@@ -803,13 +789,16 @@ const SizedBox(height: 8),
 SizedBox(
   width: double.infinity,
   child: OutlinedButton.icon(
-    onPressed: () {
-      Navigator.push(
+    onPressed: () async {
+      await Navigator.push(
         context,
         MaterialPageRoute(
           builder: (context) => const RecurringBillsScreen(),
         ),
       );
+
+      // A bill added or edited with a due date of today is recorded now.
+      await processRecurringBills();
     },
     icon: const Icon(Icons.repeat),
     label: const Text('Recurring Bills'),
@@ -853,31 +842,12 @@ DropdownButtonFormField<String>(
       borderRadius: BorderRadius.circular(12),
     ),
   ),
-  items: const [
-    DropdownMenuItem(
+  items: [
+    const DropdownMenuItem(
       value: 'All',
       child: Text('All Categories'),
     ),
-    DropdownMenuItem(
-      value: 'Food',
-      child: Text('Food'),
-    ),
-    DropdownMenuItem(
-      value: 'Transport',
-      child: Text('Transport'),
-    ),
-    DropdownMenuItem(
-      value: 'Bills',
-      child: Text('Bills'),
-    ),
-    DropdownMenuItem(
-      value: 'Shopping',
-      child: Text('Shopping'),
-    ),
-    DropdownMenuItem(
-      value: 'Other',
-      child: Text('Other'),
-    ),
+    ...categoryDropdownItems(),
   ],
   onChanged: (value) {
     setState(() {
@@ -932,10 +902,7 @@ if (expenses.isEmpty)
       ),
     );
 
-    setState(() {
-      expensesFuture = DatabaseHelper.getExpenses();
-      totalExpensesFuture = DatabaseHelper.getTotalExpenses();
-    });
+    refreshDashboard();
   },
   icon: const Icon(Icons.add),
   label: const Text('Add Expense'),
@@ -976,11 +943,7 @@ else
           ),
         );
 
-        setState(() {
-          expensesFuture = DatabaseHelper.getExpenses();
-          totalExpensesFuture = DatabaseHelper.getTotalExpenses();
-          categoryTotalsFuture = DatabaseHelper.getCategoryTotals();
-        });
+        refreshDashboard();
       },
     ),
     IconButton(
@@ -1015,12 +978,9 @@ else
   if (confirm != true) return;
 
   await DatabaseHelper.deleteExpense(expense['id']);
+  await NotificationService.checkBudget();
 
-  setState(() {
-    expensesFuture = DatabaseHelper.getExpenses();
-    totalExpensesFuture = DatabaseHelper.getTotalExpenses();
-    categoryTotalsFuture = DatabaseHelper.getCategoryTotals();
-  });
+  refreshDashboard();
 },
     ),
   ],
@@ -1042,11 +1002,7 @@ else
             ),
           );
 
-          setState(() {
-            expensesFuture = DatabaseHelper.getExpenses();
-            totalExpensesFuture = DatabaseHelper.getTotalExpenses();
-            categoryTotalsFuture = DatabaseHelper.getCategoryTotals();
-          });
+          refreshDashboard();
         },
         child: const Icon(Icons.add),
       ),
@@ -1085,8 +1041,15 @@ void initState() {
   }
 }
 
+  @override
+  void dispose() {
+    amountController.dispose();
+    descriptionController.dispose();
+    super.dispose();
+  }
+
   Future<void> saveExpense() async {
-  final amount = double.tryParse(amountController.text);
+  final amount = parseAmount(amountController.text);
   final description = descriptionController.text.trim();
 
   if (amount == null || description.isEmpty) {
@@ -1109,15 +1072,6 @@ void initState() {
     await DatabaseHelper.insertExpense(
       expense.toMap(),
     );
-    final totalSpent = await DatabaseHelper.getTotalExpenses();
-    final budget = await DatabaseHelper.getSavedBudget();
-
-    if (budget != null) {
-      await NotificationService.showBudgetAlert(
-        spent: totalSpent,
-        budget: budget,
-     );
-    }
   } else {
     final updatedExpense = {
       'id': widget.expense!['id'],
@@ -1132,15 +1086,19 @@ void initState() {
     );
   }
 
+  await NotificationService.checkBudget();
+
   if (!mounted) return;
 
   Navigator.pop(context);
 }
   @override
   Widget build(BuildContext context) {
+    final isEditing = widget.expense != null;
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Add Expense'),
+        title: Text(isEditing ? 'Edit Expense' : 'Add Expense'),
       ),
       body: Padding(
         padding: const EdgeInsets.all(16),
@@ -1210,28 +1168,7 @@ void initState() {
                   borderRadius: BorderRadius.circular(12),
                 ),
               ),
-              items: const [
-                DropdownMenuItem(
-                  value: 'Food',
-                  child: Text('Food'),
-                ),
-                DropdownMenuItem(
-                  value: 'Transport',
-                  child: Text('Transport'),
-                ),
-                DropdownMenuItem(
-                  value: 'Bills',
-                  child: Text('Bills'),
-                ),
-                DropdownMenuItem(
-                  value: 'Shopping',
-                  child: Text('Shopping'),
-                ),
-                DropdownMenuItem(
-                  value: 'Other',
-                  child: Text('Other'),
-                ),
-              ],
+              items: categoryDropdownItems(),
               onChanged: (value) {
                 setState(() {
                   selectedCategory = value!;
@@ -1246,9 +1183,9 @@ void initState() {
               height: 52,
               child: ElevatedButton(
                 onPressed: saveExpense,
-                child: const Text(
-                  'Save Expense',
-                  style: TextStyle(fontSize: 16),
+                child: Text(
+                  isEditing ? 'Update Expense' : 'Save Expense',
+                  style: const TextStyle(fontSize: 16),
                 ),
               ),
             ),
@@ -1286,7 +1223,7 @@ class _AddIncomeScreenState extends State<AddIncomeScreen> {
   }
 
   Future<void> saveIncome() async {
-    final amount = double.tryParse(amountController.text);
+    final amount = parseAmount(amountController.text);
     final description = descriptionController.text.trim();
 
     if (amount == null || description.isEmpty) {
@@ -1572,7 +1509,7 @@ class _RecurringBillsScreenState extends State<RecurringBillsScreen> {
 
     if (confirm != true) return;
 
-    await NotificationService.cancelNotification(id);
+    await NotificationService.cancelBillReminders(id);
 
     await DatabaseHelper.deleteRecurringBill(id);
 
@@ -1690,7 +1627,8 @@ class _AddRecurringBillScreenState extends State<AddRecurringBillScreen> {
 
   String selectedCategory = 'Bills';
   String selectedFrequency = 'Monthly';
-  DateTime selectedDate = DateTime.now();
+  DateTime selectedDate = DateUtils.dateOnly(DateTime.now());
+  late int anchorDay = selectedDate.day;
 
   @override
   void initState() {
@@ -1702,11 +1640,12 @@ class _AddRecurringBillScreenState extends State<AddRecurringBillScreen> {
       selectedCategory = widget.bill!['category'];
       selectedFrequency = widget.bill!['frequency'];
       selectedDate = DateTime.parse(widget.bill!['nextDueDate']);
+      anchorDay = (widget.bill!['anchorDay'] as int?) ?? selectedDate.day;
     }
   }
 
   Future<void> saveBill() async {
-  final amount = double.tryParse(amountController.text);
+  final amount = parseAmount(amountController.text);
   final description = descriptionController.text.trim();
 
   if (amount == null || description.isEmpty) {
@@ -1726,14 +1665,13 @@ class _AddRecurringBillScreenState extends State<AddRecurringBillScreen> {
     'category': selectedCategory,
     'frequency': selectedFrequency,
     'nextDueDate': selectedDate.toIso8601String(),
+    'anchorDay': anchorDay,
   };
 
   int billId;
 
   if (widget.bill != null) {
   billId = widget.bill!['id'];
-
-  await NotificationService.cancelNotification(billId);
 
   bill['id'] = billId;
 
@@ -1765,16 +1703,19 @@ class _AddRecurringBillScreenState extends State<AddRecurringBillScreen> {
   Navigator.pop(context);
 }
   Future<void> pickDate() async {
+    final today = DateUtils.dateOnly(DateTime.now());
+
     final pickedDate = await showDatePicker(
       context: context,
-      initialDate: selectedDate,
-      firstDate: DateTime.now(),
+      initialDate: selectedDate.isBefore(today) ? today : selectedDate,
+      firstDate: today,
       lastDate: DateTime(2100),
     );
 
     if (pickedDate != null) {
       setState(() {
         selectedDate = pickedDate;
+        anchorDay = pickedDate.day;
       });
     }
   }
@@ -1829,28 +1770,7 @@ class _AddRecurringBillScreenState extends State<AddRecurringBillScreen> {
                 labelText: 'Category',
                 border: OutlineInputBorder(),
               ),
-              items: const [
-                DropdownMenuItem(
-                  value: 'Bills',
-                  child: Text('Bills'),
-                ),
-                DropdownMenuItem(
-                  value: 'Food',
-                  child: Text('Food'),
-                ),
-                DropdownMenuItem(
-                  value: 'Transport',
-                  child: Text('Transport'),
-                ),
-                DropdownMenuItem(
-                  value: 'Shopping',
-                  child: Text('Shopping'),
-                ),
-                DropdownMenuItem(
-                  value: 'Other',
-                  child: Text('Other'),
-                ),
-              ],
+              items: categoryDropdownItems(),
               onChanged: (value) {
                 if (value != null) {
                   setState(() {

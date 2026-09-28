@@ -17,12 +17,27 @@ class NotificationService {
   static const int _billReminder3DaysBase = 100000;
   static const int _billReminder1DayBase = 200000;
 
-  static bool _enabled = false;
+  static const _enabledSettingKey = 'notifications_enabled';
+
+  /// True once the plugin is set up on a platform that supports it.
+  static bool _initialized = false;
+
+  /// The user's choice in Settings.
+  static bool _userEnabled = true;
+
+  static bool get _enabled => _initialized && _userEnabled;
+
+  static bool get isEnabledByUser => _userEnabled;
 
   static bool get _isSupportedPlatform =>
       !kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isMacOS);
 
+  /// Sets up the plugin. Does not ask for permission; see
+  /// [requestPermission].
   static Future<void> initialize() async {
+    _userEnabled =
+        await DatabaseHelper.getSetting(_enabledSettingKey) != 'false';
+
     if (!_isSupportedPlatform) return;
 
     tz.initializeTimeZones();
@@ -32,10 +47,15 @@ class NotificationService {
     );
 
     const androidSettings = AndroidInitializationSettings(
-      '@mipmap/ic_launcher',
+      '@drawable/ic_notification',
     );
 
-    const darwinSettings = DarwinInitializationSettings();
+    // Permission is requested later, after the welcome screens.
+    const darwinSettings = DarwinInitializationSettings(
+      requestAlertPermission: false,
+      requestBadgePermission: false,
+      requestSoundPermission: false,
+    );
 
     const settings = InitializationSettings(
       android: androidSettings,
@@ -45,12 +65,51 @@ class NotificationService {
 
     await _notifications.initialize(settings);
 
+    _initialized = true;
+  }
+
+  /// Shows the system permission prompt (Android 13+, iOS, macOS). Does
+  /// nothing if permission was already granted or denied.
+  static Future<void> requestPermission() async {
+    if (!_enabled) return;
+
     await _notifications
         .resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin>()
         ?.requestNotificationsPermission();
 
-    _enabled = true;
+    await _notifications
+        .resolvePlatformSpecificImplementation<
+            IOSFlutterLocalNotificationsPlugin>()
+        ?.requestPermissions(alert: true, badge: true, sound: true);
+
+    await _notifications
+        .resolvePlatformSpecificImplementation<
+            MacOSFlutterLocalNotificationsPlugin>()
+        ?.requestPermissions(alert: true, badge: true, sound: true);
+  }
+
+  /// Turns all PennyTrack notifications on or off. Turning them off cancels
+  /// any scheduled bill reminders; the caller should reschedule them when
+  /// turning notifications back on.
+  static Future<void> setEnabledByUser(bool enabled) async {
+    await DatabaseHelper.setSetting(_enabledSettingKey, enabled.toString());
+
+    if (!enabled) {
+      await cancelAll();
+    }
+
+    _userEnabled = enabled;
+
+    if (enabled) {
+      await requestPermission();
+    }
+  }
+
+  static Future<void> cancelAll() async {
+    if (!_initialized) return;
+
+    await _notifications.cancelAll();
   }
 
   static Future<void> showNotification({
@@ -85,6 +144,8 @@ class NotificationService {
   /// below a threshold (an expense deleted or the budget raised), that alert
   /// is re-armed so it can fire again.
   static Future<void> checkBudget() async {
+    if (!_enabled) return;
+
     final budget = await DatabaseHelper.getSavedBudget();
 
     if (budget == null || budget <= 0) return;

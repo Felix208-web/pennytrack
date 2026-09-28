@@ -10,8 +10,7 @@ import '../widgets/gradient_card.dart';
 import '../widgets/pennytrack_logo.dart';
 import '../widgets/section_header.dart';
 import '../widgets/transaction_tile.dart';
-import 'add_expense_screen.dart';
-import 'add_income_screen.dart';
+import 'add_transaction_screen.dart';
 import 'transactions_screen.dart';
 
 const double defaultMonthlyBudget = 100000;
@@ -23,6 +22,7 @@ class _HomeData {
     required this.monthSpent,
     required this.budget,
     required this.recent,
+    required this.name,
   });
 
   final double balance;
@@ -30,16 +30,21 @@ class _HomeData {
   final double monthSpent;
   final double budget;
   final List<Map<String, dynamic>> recent;
+  final String name;
 }
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
     super.key,
     required this.onOpenBills,
+    required this.onOpenSettings,
   });
 
   /// Switches the app to the Bills tab.
   final VoidCallback onOpenBills;
+
+  /// Switches the app to the Settings tab.
+  final VoidCallback onOpenSettings;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -76,6 +81,7 @@ class _HomeScreenState extends State<HomeScreen> {
       DatabaseHelper.getTotalExpenses(),
       DatabaseHelper.getSavedBudget(),
       DatabaseHelper.getTransactions(limit: 5),
+      DatabaseHelper.getSetting('user_name'),
     ]);
 
     return _HomeData(
@@ -84,6 +90,7 @@ class _HomeScreenState extends State<HomeScreen> {
       monthSpent: results[2] as double,
       budget: (results[3] as double?) ?? defaultMonthlyBudget,
       recent: results[4] as List<Map<String, dynamic>>,
+      name: (results[5] as String?) ?? '',
     );
   }
 
@@ -121,13 +128,18 @@ class _HomeScreenState extends State<HomeScreen> {
               // Bottom padding keeps content clear of the floating nav bar.
               padding: const EdgeInsets.fromLTRB(20, 12, 20, 120),
               children: [
-                const _Header(),
+                _Header(
+                  name: data.name,
+                  onAvatarTap: widget.onOpenSettings,
+                ),
                 const SizedBox(height: 24),
                 _BalanceCard(data: data),
                 const SizedBox(height: 24),
                 _QuickActions(
-                  onExpense: () => _push(const AddExpenseScreen()),
-                  onIncome: () => _push(const AddIncomeScreen()),
+                  onExpense: () => _push(const AddTransactionScreen()),
+                  onIncome: () => _push(
+                    const AddTransactionScreen(type: TransactionType.income),
+                  ),
                   onBills: widget.onOpenBills,
                   onBudget: () => showEditBudgetDialog(context, data.budget),
                 ),
@@ -164,10 +176,20 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 class _Header extends StatelessWidget {
-  const _Header();
+  const _Header({
+    required this.name,
+    required this.onAvatarTap,
+  });
+
+  final String name;
+  final VoidCallback onAvatarTap;
 
   @override
   Widget build(BuildContext context) {
+    final greeting = name.isEmpty
+        ? '${greetingForNow()} 👋'
+        : '${greetingForNow()}, $name 👋';
+
     return Row(
       children: [
         const PennyTrackLogo(size: 44),
@@ -177,7 +199,9 @@ class _Header extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                '${greetingForNow()} 👋',
+                greeting,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.w700,
@@ -192,6 +216,36 @@ class _Header extends StatelessWidget {
                 ),
               ),
             ],
+          ),
+        ),
+        const SizedBox(width: 12),
+        Semantics(
+          button: true,
+          label: 'Settings',
+          child: GestureDetector(
+            onTap: onAvatarTap,
+            child: Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                shape: BoxShape.circle,
+                border: Border.all(color: AppColors.border),
+              ),
+              alignment: Alignment.center,
+              child: name.isEmpty
+                  ? const Icon(
+                      Icons.person_outline_rounded,
+                      color: AppColors.textSecondary,
+                    )
+                  : Text(
+                      name[0].toUpperCase(),
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.orange,
+                      ),
+                    ),
+            ),
           ),
         ),
       ],
@@ -221,14 +275,23 @@ class _BalanceCard extends StatelessWidget {
           FittedBox(
             fit: BoxFit.scaleDown,
             alignment: Alignment.centerLeft,
-            child: Text(
-              formatNaira(data.balance),
-              style: const TextStyle(
-                color: Colors.black,
-                fontSize: 38,
-                fontWeight: FontWeight.w800,
-                letterSpacing: -1,
-              ),
+            // Counts up from zero on first load, then from the old
+            // balance to the new one after each change.
+            child: TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0, end: data.balance),
+              duration: const Duration(milliseconds: 800),
+              curve: Curves.easeOutCubic,
+              builder: (context, value, _) {
+                return Text(
+                  formatNaira(value),
+                  style: const TextStyle(
+                    color: Colors.black,
+                    fontSize: 38,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: -1,
+                  ),
+                );
+              },
             ),
           ),
           const SizedBox(height: 22),
@@ -544,14 +607,21 @@ class _GradientProgressBar extends StatelessWidget {
         borderRadius: BorderRadius.circular(10),
       ),
       alignment: Alignment.centerLeft,
-      child: FractionallySizedBox(
-        widthFactor: value,
-        child: Container(
-          decoration: BoxDecoration(
-            gradient: AppColors.orangeGradient,
-            borderRadius: BorderRadius.circular(10),
-          ),
-        ),
+      child: TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0, end: value),
+        duration: const Duration(milliseconds: 800),
+        curve: Curves.easeOutCubic,
+        builder: (context, animatedValue, _) {
+          return FractionallySizedBox(
+            widthFactor: animatedValue,
+            child: Container(
+              decoration: BoxDecoration(
+                gradient: AppColors.orangeGradient,
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+          );
+        },
       ),
     );
   }

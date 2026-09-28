@@ -4,8 +4,10 @@ import '../database/database_helper.dart';
 import '../services/app_sync.dart';
 import '../theme/app_colors.dart';
 import '../utils/formatters.dart';
+import '../utils/recurrence.dart';
 import '../widgets/category_icon.dart';
 import '../widgets/empty_state.dart';
+import '../widgets/gradient_card.dart';
 import 'add_recurring_bill_screen.dart';
 
 /// The Bills tab: recurring bills, soonest first.
@@ -85,22 +87,37 @@ class _BillsScreenState extends State<BillsScreen> {
             );
           }
 
-          final monthlyTotal = bills
-              .where((bill) => bill['frequency'] == 'Monthly')
-              .fold<double>(
-                0,
-                (sum, bill) => sum + (bill['amount'] as num).toDouble(),
-              );
+          final monthlyTotal = bills.fold<double>(
+            0,
+            (sum, bill) =>
+                sum +
+                monthlyEquivalent(
+                  (bill['amount'] as num).toDouble(),
+                  bill['frequency'].toString(),
+                ),
+          );
+
+          // Bills come back soonest first.
+          final nextBill = bills.first;
 
           return ListView(
             // Bottom padding keeps the last card clear of the nav bar.
             padding: const EdgeInsets.fromLTRB(20, 4, 20, 120),
             children: [
-              Text(
-                '${bills.length} bill${bills.length == 1 ? '' : 's'} · ${formatNaira(monthlyTotal)} monthly',
-                style: const TextStyle(color: AppColors.textSecondary),
+              _BillsSummary(
+                billCount: bills.length,
+                monthlyTotal: monthlyTotal,
+                nextBill: nextBill,
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 24),
+              const Text(
+                'Upcoming',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 12),
               ...bills.map(
                 (bill) => Padding(
                   padding: const EdgeInsets.only(bottom: 12),
@@ -118,6 +135,82 @@ class _BillsScreenState extends State<BillsScreen> {
   }
 }
 
+class _BillsSummary extends StatelessWidget {
+  const _BillsSummary({
+    required this.billCount,
+    required this.monthlyTotal,
+    required this.nextBill,
+  });
+
+  final int billCount;
+  final double monthlyTotal;
+  final Map<String, dynamic> nextBill;
+
+  @override
+  Widget build(BuildContext context) {
+    final nextDue = DateTime.parse(nextBill['nextDueDate'].toString());
+
+    return GradientCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Bills per month · $billCount active',
+            style: const TextStyle(
+              color: Colors.black87,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 6),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(
+              formatNaira(monthlyTotal),
+              style: const TextStyle(
+                color: Colors.black,
+                fontSize: 32,
+                fontWeight: FontWeight.w800,
+                letterSpacing: -1,
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.notifications_active_outlined,
+                  size: 18,
+                  color: Colors.black,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Next: ${nextBill['description']} · ${formatDueIn(nextDue)}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.black,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _BillCard extends StatelessWidget {
   const _BillCard({
     required this.bill,
@@ -130,9 +223,7 @@ class _BillCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final dueDate = DateTime.parse(bill['nextDueDate'].toString());
-    final daysLeft = DateUtils.dateOnly(dueDate)
-        .difference(DateUtils.dateOnly(DateTime.now()))
-        .inDays;
+    final daysLeft = calendarDaysBetween(DateTime.now(), dueDate);
     final isSoon = daysLeft <= 3;
 
     return Card(

@@ -48,10 +48,18 @@ String formatExpenseDate(String dateString) {
   return '${date.day}/${date.month}/${date.year}';
 }
 
+/// Whole calendar days from [from] to [to], ignoring the time of day.
+/// Uses UTC so a daylight-saving change can't make a day 23 hours long.
+int calendarDaysBetween(DateTime from, DateTime to) {
+  final start = DateTime.utc(from.year, from.month, from.day);
+  final end = DateTime.utc(to.year, to.month, to.day);
+
+  return end.difference(start).inDays;
+}
+
 /// "Due today", "Due tomorrow", "Due in 5 days" for a bill's next due date.
 String formatDueIn(DateTime dueDate) {
-  final today = DateUtils.dateOnly(DateTime.now());
-  final days = DateUtils.dateOnly(dueDate).difference(today).inDays;
+  final days = calendarDaysBetween(DateTime.now(), dueDate);
 
   if (days <= 0) return 'Due today';
   if (days == 1) return 'Due tomorrow';
@@ -83,4 +91,55 @@ IconData getCategoryIcon(String category) {
     default:
       return Icons.more_horiz_rounded;
   }
+}
+
+const List<String> _monthNames = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+
+const List<String> _weekdayShort = [
+  'Mon',
+  'Tue',
+  'Wed',
+  'Thu',
+  'Fri',
+  'Sat',
+  'Sun',
+];
+
+/// "September 2026".
+String formatMonthYear(DateTime date) {
+  return '${_monthNames[date.month - 1]} ${date.year}';
+}
+
+/// "28 Sep 2026".
+String formatShortDate(DateTime date) {
+  return '${date.day} ${_monthNames[date.month - 1].substring(0, 3)} ${date.year}';
+}
+
+/// Heading for a day in a transaction list: "Today", "Yesterday",
+/// "Mon, 21 Sep", or "Mon, 21 Sep 2025" for other years.
+String formatDayHeader(DateTime date, {DateTime? now}) {
+  final today = now ?? DateTime.now();
+  final day = date;
+  final difference = calendarDaysBetween(day, today);
+
+  if (difference == 0) return 'Today';
+  if (difference == 1) return 'Yesterday';
+
+  final label =
+      '${_weekdayShort[day.weekday - 1]}, ${day.day} ${_monthNames[day.month - 1].substring(0, 3)}';
+
+  return day.year == today.year ? label : '$label ${day.year}';
 }

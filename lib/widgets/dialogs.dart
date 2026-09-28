@@ -93,3 +93,49 @@ Future<double?> showEditBudgetDialog(
 
   return newBudget;
 }
+
+/// Asks for the user's name and saves it. Returns the new name, or null if
+/// they cancelled.
+Future<String?> showEditNameDialog(
+  BuildContext context,
+  String currentName,
+) async {
+  final controller = TextEditingController(text: currentName);
+
+  final newName = await showDialog<String>(
+    context: context,
+    builder: (context) {
+      return AlertDialog(
+        title: const Text('Your name'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          textCapitalization: TextCapitalization.words,
+          decoration: const InputDecoration(
+            hintText: 'What should we call you?',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            style: TextButton.styleFrom(
+              foregroundColor: AppColors.textSecondary,
+            ),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('Save'),
+          ),
+        ],
+      );
+    },
+  );
+
+  if (newName != null) {
+    await DatabaseHelper.setSetting('user_name', newName);
+    AppSync.notifyChanged();
+  }
+
+  return newName;
+}

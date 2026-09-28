@@ -7,9 +7,15 @@ import '../utils/formatters.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/transaction_tile.dart';
 
-/// Every expense and income, with search and a category filter.
+/// Every expense and income grouped by day, with search and a filter.
 class TransactionsScreen extends StatefulWidget {
-  const TransactionsScreen({super.key});
+  const TransactionsScreen({
+    super.key,
+    this.initialFilter = 'All',
+  });
+
+  /// 'All', 'Income' or an expense category.
+  final String initialFilter;
 
   @override
   State<TransactionsScreen> createState() => _TransactionsScreenState();
@@ -21,7 +27,7 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
   late Future<List<Map<String, dynamic>>> transactionsFuture;
 
   String searchQuery = '';
-  String selectedFilter = 'All';
+  late String selectedFilter = widget.initialFilter;
 
   @override
   void initState() {
@@ -56,6 +62,35 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
         selectedFilter == 'All' || category == selectedFilter;
 
     return matchesSearch && matchesFilter;
+  }
+
+  /// Flattens transactions (already newest first) into a list of
+  /// [_DayHeader]s, each followed by that day's transactions.
+  List<Object> _groupByDay(List<Map<String, dynamic>> transactions) {
+    final rows = <Object>[];
+    _DayHeader? current;
+
+    for (final transaction in transactions) {
+      final date = DateTime.parse(transaction['date'].toString());
+      final day = DateTime(date.year, date.month, date.day);
+
+      if (current == null || current.day != day) {
+        current = _DayHeader(day);
+        rows.add(current);
+      }
+
+      final amount = (transaction['amount'] as num).toDouble();
+
+      if (transaction['type'] == 'income') {
+        current.income += amount;
+      } else {
+        current.spent += amount;
+      }
+
+      rows.add(transaction);
+    }
+
+    return rows;
   }
 
   @override
@@ -140,14 +175,71 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                   );
                 }
 
+                final rows = _groupByDay(filtered);
+
                 return ListView.builder(
                   padding: const EdgeInsets.fromLTRB(20, 4, 20, 32),
-                  itemCount: filtered.length,
+                  itemCount: rows.length,
                   itemBuilder: (context, index) {
-                    return TransactionTile(transaction: filtered[index]);
+                    final row = rows[index];
+
+                    if (row is _DayHeader) {
+                      return _DayHeaderRow(header: row);
+                    }
+
+                    return TransactionTile(
+                      transaction: row as Map<String, dynamic>,
+                    );
                   },
                 );
               },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DayHeader {
+  _DayHeader(this.day);
+
+  final DateTime day;
+  double spent = 0;
+  double income = 0;
+}
+
+class _DayHeaderRow extends StatelessWidget {
+  const _DayHeaderRow({required this.header});
+
+  final _DayHeader header;
+
+  @override
+  Widget build(BuildContext context) {
+    final totals = [
+      if (header.income > 0) '+${formatNaira(header.income)}',
+      if (header.spent > 0) '-${formatNaira(header.spent)}',
+    ].join('  ');
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 16, bottom: 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              formatDayHeader(header.day),
+              style: const TextStyle(
+                fontWeight: FontWeight.w700,
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ),
+          Text(
+            totals,
+            style: const TextStyle(
+              fontSize: 12,
+              color: AppColors.textMuted,
+              fontWeight: FontWeight.w600,
             ),
           ),
         ],

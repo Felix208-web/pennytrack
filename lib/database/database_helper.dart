@@ -128,42 +128,49 @@ class DatabaseHelper {
     );
   }
 
-  /// Start (inclusive) and end (exclusive) of the current month, as ISO
-  /// strings comparable with the stored `date` columns.
-  static List<String> _currentMonthRange() {
-    final now = DateTime.now();
+  /// Start (inclusive) and end (exclusive) of [month]'s calendar month
+  /// (the current month if null), as ISO strings comparable with the stored
+  /// `date` columns.
+  static List<String> _monthRange([DateTime? month]) {
+    final date = month ?? DateTime.now();
 
     return [
-      DateTime(now.year, now.month, 1).toIso8601String(),
-      DateTime(now.year, now.month + 1, 1).toIso8601String(),
+      DateTime(date.year, date.month, 1).toIso8601String(),
+      DateTime(date.year, date.month + 1, 1).toIso8601String(),
     ];
   }
 
-  static Future<double> _sum(String table, {bool thisMonthOnly = true}) async {
+  static Future<double> _sum(
+    String table, {
+    DateTime? month,
+    bool allTime = false,
+  }) async {
     final database = await DatabaseHelper.database;
 
-    final result = thisMonthOnly
+    final result = allTime
         ? await database.rawQuery(
-            'SELECT SUM(amount) as total FROM $table WHERE date >= ? AND date < ?',
-            _currentMonthRange(),
+            'SELECT SUM(amount) as total FROM $table',
           )
         : await database.rawQuery(
-            'SELECT SUM(amount) as total FROM $table',
+            'SELECT SUM(amount) as total FROM $table WHERE date >= ? AND date < ?',
+            _monthRange(month),
           );
 
     return (result.first['total'] as num?)?.toDouble() ?? 0.0;
   }
 
-  /// Total spent in the current month.
-  static Future<double> getTotalExpenses() => _sum('expenses');
+  /// Total spent in [month] (the current month if null).
+  static Future<double> getTotalExpenses({DateTime? month}) =>
+      _sum('expenses', month: month);
 
-  /// Total income in the current month.
-  static Future<double> getTotalIncome() => _sum('income');
+  /// Total income in [month] (the current month if null).
+  static Future<double> getTotalIncome({DateTime? month}) =>
+      _sum('income', month: month);
 
   /// All-time income minus all-time expenses.
   static Future<double> getBalance() async {
-    final income = await _sum('income', thisMonthOnly: false);
-    final expenses = await _sum('expenses', thisMonthOnly: false);
+    final income = await _sum('income', allTime: true);
+    final expenses = await _sum('expenses', allTime: true);
 
     return income - expenses;
   }
@@ -186,6 +193,57 @@ class DatabaseHelper {
       ${limit != null ? 'LIMIT $limit' : ''}
       ''',
     );
+  }
+
+  static Future<String?> getSetting(String key) async {
+    final database = await DatabaseHelper.database;
+
+    final result = await database.query(
+      'settings',
+      where: 'key = ?',
+      whereArgs: [key],
+      limit: 1,
+    );
+
+    return result.isEmpty ? null : result.first['value'].toString();
+  }
+
+  static Future<void> setSetting(String key, String value) async {
+    final database = await DatabaseHelper.database;
+
+    await database.insert(
+      'settings',
+      {
+        'key': key,
+        'value': value,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// Settings that survive "Clear all data": who the user is and their
+  /// preferences, as opposed to their financial data.
+  static const _keptSettings = [
+    'user_name',
+    'onboarding_done',
+    'notifications_enabled',
+  ];
+
+  /// Deletes every expense, income, recurring bill, the budget and the
+  /// budget-alert state.
+  static Future<void> clearAllData() async {
+    final database = await DatabaseHelper.database;
+
+    await database.transaction((txn) async {
+      await txn.delete('expenses');
+      await txn.delete('income');
+      await txn.delete('recurring_bills');
+      await txn.delete(
+        'settings',
+        where: 'key NOT IN (${List.filled(_keptSettings.length, '?').join(', ')})',
+        whereArgs: _keptSettings,
+      );
+    });
   }
 
   static Future<void> saveBudget(double budget) async {
@@ -262,7 +320,11 @@ class DatabaseHelper {
     );
   }
 
-  static Future<List<Map<String, dynamic>>> getCategoryTotals() async {
+  /// Spending per category in [month] (the current month if null),
+  /// largest first.
+  static Future<List<Map<String, dynamic>>> getCategoryTotals({
+    DateTime? month,
+  }) async {
     final database = await DatabaseHelper.database;
 
     return await database.rawQuery(
@@ -273,7 +335,7 @@ class DatabaseHelper {
       GROUP BY category
       ORDER BY total DESC
       ''',
-      _currentMonthRange(),
+      _monthRange(month),
     );
   }
 

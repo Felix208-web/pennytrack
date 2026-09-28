@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../services/app_sync.dart';
+import '../services/notification_service.dart';
 import '../theme/app_colors.dart';
-import 'add_expense_screen.dart';
-import 'add_income_screen.dart';
+import 'add_transaction_screen.dart';
 import 'add_recurring_bill_screen.dart';
 import 'bills_screen.dart';
 import 'home_screen.dart';
@@ -21,6 +22,7 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   static const _billsTab = 2;
+  static const _settingsTab = 3;
 
   int currentTab = 0;
 
@@ -28,15 +30,21 @@ class _AppShellState extends State<AppShell> {
   void initState() {
     super.initState();
     AppSync.startup();
+    // No-op if the user already answered the prompt (e.g. in onboarding).
+    NotificationService.requestPermission();
   }
 
   void _selectTab(int index) {
+    if (index != currentTab) HapticFeedback.selectionClick();
+
     setState(() {
       currentTab = index;
     });
   }
 
   Future<void> _showAddSheet() async {
+    HapticFeedback.lightImpact();
+
     final screen = await showModalBottomSheet<Widget>(
       context: context,
       builder: (context) => const _AddSheet(),
@@ -58,7 +66,10 @@ class _AppShellState extends State<AppShell> {
       body: IndexedStack(
         index: currentTab,
         children: [
-          HomeScreen(onOpenBills: () => _selectTab(_billsTab)),
+          HomeScreen(
+            onOpenBills: () => _selectTab(_billsTab),
+            onOpenSettings: () => _selectTab(_settingsTab),
+          ),
           const StatsScreen(),
           const BillsScreen(),
           const SettingsScreen(),
@@ -252,14 +263,17 @@ class _AddSheet extends StatelessWidget {
               color: AppColors.orange,
               title: 'Expense',
               subtitle: 'Something you spent money on',
-              onTap: () => Navigator.pop(context, const AddExpenseScreen()),
+              onTap: () => Navigator.pop(context, const AddTransactionScreen()),
             ),
             _AddOption(
               icon: Icons.south_west_rounded,
               color: AppColors.income,
               title: 'Income',
               subtitle: 'Salary, allowance, gifts',
-              onTap: () => Navigator.pop(context, const AddIncomeScreen()),
+              onTap: () => Navigator.pop(
+                context,
+                const AddTransactionScreen(type: TransactionType.income),
+              ),
             ),
             _AddOption(
               icon: Icons.repeat_rounded,

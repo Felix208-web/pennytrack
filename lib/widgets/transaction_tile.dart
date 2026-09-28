@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../database/database_helper.dart';
-import '../screens/add_expense_screen.dart';
-import '../screens/add_income_screen.dart';
+import '../screens/add_transaction_screen.dart';
 import '../services/app_sync.dart';
 import '../theme/app_colors.dart';
 import '../utils/formatters.dart';
@@ -25,9 +24,10 @@ class TransactionTile extends StatelessWidget {
     await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => _isIncome
-            ? AddIncomeScreen(income: transaction)
-            : AddExpenseScreen(expense: transaction),
+        builder: (context) => AddTransactionScreen(
+          type: _isIncome ? TransactionType.income : TransactionType.expense,
+          transaction: transaction,
+        ),
       ),
     );
   }

@@ -32,3 +32,17 @@ DateTime _clampedDate(int year, int month, int day) {
     day > lastDay ? lastDay : day,
   );
 }
+
+/// What a bill costs per month on average, so weekly, monthly and yearly
+/// bills can be added up.
+double monthlyEquivalent(double amount, String frequency) {
+  switch (frequency) {
+    case 'Weekly':
+      return amount * 52 / 12;
+    case 'Yearly':
+      return amount / 12;
+    case 'Monthly':
+    default:
+      return amount;
+  }
+}

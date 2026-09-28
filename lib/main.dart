@@ -1,121 +1,1925 @@
 import 'package:flutter/material.dart';
+import 'database/database_helper.dart';
+import 'models/expense.dart';
+import 'models/income.dart';
+import 'models/recurring_bill.dart';
+import 'services/notification_service.dart';
 
-void main() {
-  runApp(const MyApp());
+String formatNaira(double amount) {
+  return '₦${amount.toStringAsFixed(0).replaceAllMapped(
+    RegExp(r'\B(?=(\d{3})+(?!\d))'),
+    (match) => ',',
+  )}';
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+String formatExpenseDate(String dateString) {
+  final date = DateTime.parse(dateString);
+  final now = DateTime.now();
 
-  // This widget is the root of your application.
+  if (date.year == now.year &&
+      date.month == now.month &&
+      date.day == now.day) {
+    return 'Today';
+  }
+
+  final yesterday = now.subtract(const Duration(days: 1));
+
+  if (date.year == yesterday.year &&
+      date.month == yesterday.month &&
+      date.day == yesterday.day) {
+    return 'Yesterday';
+  }
+
+  return '${date.day}/${date.month}/${date.year}';
+}
+
+IconData getCategoryIcon(String category) {
+  switch (category) {
+    case 'Food':
+      return Icons.restaurant;
+    case 'Transport':
+      return Icons.directions_bus;
+    case 'Bills':
+      return Icons.receipt_long;
+    case 'Shopping':
+      return Icons.shopping_bag;
+    default:
+      return Icons.more_horiz;
+  }
+}
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  await NotificationService.initialize();
+
+  runApp(const PennyTrackApp());
+}
+
+class PennyTrackLogo extends StatelessWidget {
+  const PennyTrackLogo({
+    super.key,
+    this.size = 48,
+  });
+
+  final double size;
+
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: Colors.green.shade700,
+        borderRadius: BorderRadius.circular(size * 0.25),
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      child: Center(
+        child: Text(
+          'P',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: size * 0.6,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
+class PennyTrackApp extends StatelessWidget {
+  const PennyTrackApp({super.key});
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+
+      title: 'PennyTrack',
+
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.green,
+        ),
+        useMaterial3: true,
+      ),
+
+      darkTheme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.green,
+          brightness: Brightness.dark,
+        ),
+        useMaterial3: true,
+      ),
+
+      themeMode: ThemeMode.system,
+
+      home: const DashboardScreen(),
+    );
+  }
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class DashboardScreen extends StatefulWidget {
+  const DashboardScreen({super.key});
 
-  void _incrementCounter() {
+  @override
+  State<DashboardScreen> createState() => _DashboardScreenState();
+}
+
+class _DashboardScreenState extends State<DashboardScreen> {
+  late Future<List<Map<String, dynamic>>> expensesFuture;
+  late Future<double> totalExpensesFuture;
+  late Future<List<Map<String, dynamic>>> categoryTotalsFuture;
+  late Future<double> totalIncomeFuture;
+  late Future<List<Map<String, dynamic>>> incomeFuture;
+
+  double monthlyBudget = 100000;
+  String searchQuery = '';
+  String selectedCategory = 'All';
+  Future<void> editBudget() async {
+  final controller = TextEditingController(
+    text: monthlyBudget.toStringAsFixed(0),
+  );
+
+  final newBudget = await showDialog<double>(
+    context: context,
+    builder: (context) {
+      return AlertDialog(
+        title: const Text('Set Monthly Budget'),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(
+            prefixText: '₦',
+            hintText: 'Enter budget',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+            },
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final value = double.tryParse(controller.text);
+
+              if (value != null && value > 0) {
+                Navigator.pop(context, value);
+              }
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      );
+    },
+  );
+
+  if (newBudget != null) {
+  await DatabaseHelper.saveBudget(newBudget);
+
+  setState(() {
+    monthlyBudget = newBudget;
+  });
+}
+}
+
+Future<void> loadSavedBudget() async {
+  final savedBudget = await DatabaseHelper.getSavedBudget();
+
+  if (savedBudget != null) {
     setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+      monthlyBudget = savedBudget;
+    });
+  }
+}
+
+  @override
+void initState() {
+  super.initState();
+
+  processRecurringBills();
+  checkUpcomingBills();
+  DatabaseHelper.checkAndResetBudgetAlerts();
+
+  expensesFuture = DatabaseHelper.getExpenses();
+  totalExpensesFuture = DatabaseHelper.getTotalExpenses();
+  totalIncomeFuture = DatabaseHelper.getTotalIncome();
+  incomeFuture = DatabaseHelper.getIncome();
+  categoryTotalsFuture = DatabaseHelper.getCategoryTotals();
+
+  loadSavedBudget();
+}
+
+Future<void> checkUpcomingBills() async {
+  final bills = await DatabaseHelper.getRecurringBills();
+
+  final tomorrow = DateTime.now().add(
+    const Duration(days: 1),
+  );
+
+  for (final bill in bills) {
+    final dueDate = DateTime.parse(
+      bill['nextDueDate'].toString(),
+    );
+
+    final isDueTomorrow =
+        dueDate.year == tomorrow.year &&
+        dueDate.month == tomorrow.month &&
+        dueDate.day == tomorrow.day;
+
+    if (isDueTomorrow) {
+      await NotificationService.showNotification(
+        id: bill['id'] as int,
+        title: 'Upcoming Bill',
+        body:
+            '${bill['description']} of ${formatNaira((bill['amount'] as num).toDouble())} is due tomorrow.',
+      );
+    }
+  }
+}
+
+Future<void> processRecurringBills() async {
+  await DatabaseHelper.processRecurringBills();
+
+  final bills = await DatabaseHelper.getRecurringBills();
+
+  for (final bill in bills) {
+    await NotificationService.scheduleBillReminder(
+      id: bill['id'] as int,
+      description: bill['description'].toString(),
+      amount: (bill['amount'] as num).toDouble(),
+      dueDate: DateTime.parse(
+        bill['nextDueDate'].toString(),
+      ),
+    );
+  }
+
+  if (!mounted) return;
+
+  setState(() {
+    expensesFuture = DatabaseHelper.getExpenses();
+    totalExpensesFuture = DatabaseHelper.getTotalExpenses();
+    categoryTotalsFuture = DatabaseHelper.getCategoryTotals();
+  });
+}
+
+@override
+Widget build(BuildContext context) {
+  return Scaffold(
+    appBar: AppBar(
+      title: Row(
+        children: [
+          const PennyTrackLogo(size: 36),
+          const SizedBox(width: 1),
+          const Text(
+            'ennyTrack',
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
+    ),
+
+    body: FutureBuilder<List<Map<String, dynamic>>>(
+      future: expensesFuture,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(
+            child: CircularProgressIndicator(),
+          );
+        }
+
+        if (snapshot.hasError) {
+          return Center(
+            child: Text(
+              'Error loading expenses: ${snapshot.error}',
+            ),
+          );
+        }
+
+        final expenses = snapshot.data ?? [];
+
+        final filteredExpenses = expenses.where((expense) {
+          final description =
+              expense['description'].toString().toLowerCase();
+
+          final category =
+              expense['category'].toString().toLowerCase();
+
+          final matchesSearch =
+              description.contains(searchQuery) ||
+              category.contains(searchQuery);
+
+          final matchesCategory =
+              selectedCategory == 'All' ||
+              category == selectedCategory.toLowerCase();
+
+          return matchesSearch && matchesCategory;
+        }).toList();
+
+        return SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '${DateTime.now().hour < 12 ? 'Good Morning' : DateTime.now().hour < 17 ? 'Good Afternoon' : 'Good Evening'} 👋',
+                style: const TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+
+              const SizedBox(height: 6),
+
+              Text(
+                'Here’s your financial overview',
+                style: TextStyle(
+                  color: Colors.grey[600],
+                  fontSize: 15,
+                ),
+              ),
+
+              const SizedBox(height: 24),
+
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Current Balance',
+                              style: TextStyle(
+                                color: Colors.grey[600],
+                              ),
+                            ),
+
+                            const SizedBox(height: 8),
+
+                            FutureBuilder<double>(
+                              future: Future.wait([
+                                totalIncomeFuture,
+                                totalExpensesFuture,
+                              ]).then(
+                                (values) => values[0] - values[1],
+                              ),
+                              builder: (context, snapshot) {
+                                if (snapshot.connectionState ==
+                                    ConnectionState.waiting) {
+                                  return const Text(
+                                    '₦...',
+                                    style: TextStyle(
+                                      fontSize: 32,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  );
+                                }
+
+                                return Text(
+                                  formatNaira(snapshot.data ?? 0),
+                                  style: const TextStyle(
+                                    fontSize: 32,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                );
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Container(
+                            decoration: BoxDecoration(
+                              color: Colors.green.shade50,
+                              borderRadius:
+                                  BorderRadius.circular(20),
+                            ),
+                            child: TextButton.icon(
+                              onPressed: () async {
+                                await Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) =>
+                                        const AddIncomeScreen(),
+                                  ),
+                                );
+
+                                if (!mounted) return;
+
+                                setState(() {
+                                  totalIncomeFuture =
+                                      DatabaseHelper.getTotalIncome();
+                                  incomeFuture =
+                                      DatabaseHelper.getIncome();
+                                });
+                              },
+                              icon: const Icon(
+                                Icons.add,
+                                size: 18,
+                              ),
+                              label: const Text('Add Income'),
+                              style: TextButton.styleFrom(
+                                padding:
+                                    const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 6,
+                                ),
+                                minimumSize: Size.zero,
+                                tapTargetSize:
+                                    MaterialTapTargetSize.shrinkWrap,
+                              ),
+                            ),
+                          ),
+
+                          const SizedBox(height: 12),
+
+                          Text(
+                            'Total Income',
+                            style: TextStyle(
+                              color: Colors.grey[600],
+                              fontSize: 13,
+                            ),
+                          ),
+
+                          const SizedBox(height: 2),
+
+                          FutureBuilder<double>(
+                            future: totalIncomeFuture,
+                            builder: (context, snapshot) {
+                              if (snapshot.connectionState ==
+                                  ConnectionState.waiting) {
+                                return const Text(
+                                  '₦...',
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                );
+                              }
+
+                              return Text(
+                                formatNaira(snapshot.data ?? 0),
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 20),
+
+              const Text(
+                'This Month',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+
+              const SizedBox(height: 12),
+
+Row(
+  crossAxisAlignment: CrossAxisAlignment.start,
+  children: [
+    Expanded(
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Spent',
+                style: TextStyle(
+                  color: Colors.grey[600],
+                ),
+              ),
+              const SizedBox(height: 8),
+              FutureBuilder<double>(
+                future: totalExpensesFuture,
+                builder: (context, snapshot) {
+                  final total = snapshot.data ?? 0.0;
+
+                  return Text(
+                    formatNaira(total),
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+
+    const SizedBox(width: 12),
+
+    Expanded(
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Text(
+                    'Budget Left',
+                    style: TextStyle(
+                      color: Colors.grey[600],
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  GestureDetector(
+                    onTap: editBudget,
+                    child: const Icon(
+                      Icons.edit_outlined,
+                      size: 16,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              FutureBuilder<double>(
+                future: totalExpensesFuture,
+                builder: (context, snapshot) {
+                  final totalSpent = snapshot.data ?? 0.0;
+                  final budgetLeft = monthlyBudget - totalSpent;
+
+                  return Text(
+                    formatNaira(budgetLeft),
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  );
+                },
+              ),
+
+            
+            ],
+          ),
+        ),
+      ),
+    ),
+  ],
+),
+
+const SizedBox(height: 16),
+
+Text(
+  'Monthly Budget',
+  style: TextStyle(
+    color: Colors.grey[600],
+  ),
+),
+
+const SizedBox(height: 8),
+
+FutureBuilder<double>(
+  future: totalExpensesFuture,
+  builder: (context, snapshot) {
+    final totalSpent = snapshot.data ?? 0.0;
+
+    final progress = monthlyBudget > 0
+        ? (totalSpent / monthlyBudget).clamp(0.0, 1.0)
+        : 0.0;
+
+    final percentage = monthlyBudget > 0
+        ? (totalSpent / monthlyBudget) * 100
+        : 0.0;
+
+    String budgetMessage;
+
+    if (percentage >= 100) {
+      budgetMessage = 'Budget exceeded';
+    } else if (percentage >= 80) {
+      budgetMessage = 'You are close to your budget limit';
+    } else {
+      budgetMessage = 'You are within your budget';
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        LinearProgressIndicator(
+          value: progress,
+          minHeight: 8,
+        ),
+
+        const SizedBox(height: 6),
+
+        Text(
+          '${formatNaira(totalSpent)} of ${formatNaira(monthlyBudget)}',
+          style: TextStyle(
+            color: Colors.grey[600],
+            fontSize: 12,
+          ),
+        ),
+
+        const SizedBox(height: 6),
+
+        Text(
+          budgetMessage,
+          style: const TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    );
+  },
+),
+
+const SizedBox(height: 24),
+
+const Text(
+  'Spending by Category',
+  style: TextStyle(
+    fontSize: 20,
+    fontWeight: FontWeight.bold,
+  ),
+),
+
+const SizedBox(height: 12),
+
+FutureBuilder<List<Map<String, dynamic>>>(
+  future: categoryTotalsFuture,
+  builder: (context, snapshot) {
+    if (!snapshot.hasData || snapshot.data!.isEmpty) {
+      return const Text(
+        'No spending data yet.',
+        style: TextStyle(
+          color: Colors.grey,
+        ),
+      );
+    }
+
+    final categories = snapshot.data!;
+
+    final totalCategorySpending = categories.fold<double>(
+      0.0,
+      (sum, category) =>
+          sum + (category['total'] as num).toDouble(),
+    );
+
+    return Column(
+      children: categories.map((category) {
+        final categoryTotal =
+            (category['total'] as num).toDouble();
+
+        final percentage = totalCategorySpending > 0
+            ? categoryTotal / totalCategorySpending
+            : 0.0;
+
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 18),
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  CircleAvatar(
+                    radius: 20,
+                    child: Icon(
+                      getCategoryIcon(category['category']),
+                      size: 20,
+                    ),
+                  ),
+
+                  const SizedBox(width: 12),
+
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          category['category'],
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          '${(percentage * 100).round()}%',
+                          style: TextStyle(
+                            color: Colors.grey[600],
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  Text(
+                    formatNaira(categoryTotal),
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 8),
+
+              SizedBox(
+  width: 275,
+  child: LinearProgressIndicator(
+    value: percentage,
+    minHeight: 6,
+  ),
+),
+            ],
+          ),
+        );
+      }).toList(),
+    );
+  },
+),
+
+const SizedBox(height: 16),
+
+SizedBox(
+  width: double.infinity,
+  child: OutlinedButton.icon(
+    onPressed: () async {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => const AddIncomeScreen(),
+        ),
+      );
+
+      setState(() {
+        totalIncomeFuture = DatabaseHelper.getTotalIncome();
+        totalExpensesFuture = DatabaseHelper.getTotalExpenses();
+      });
+    },
+    icon: const Icon(Icons.account_balance_wallet),
+    label: const Text('Add Income'),
+  ),
+),
+
+const SizedBox(height: 8),
+
+SizedBox(
+  width: double.infinity,
+  child: OutlinedButton.icon(
+    onPressed: () {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => const IncomeScreen(),
+        ),
+      );
+    },
+    icon: const Icon(Icons.list_alt),
+    label: const Text('View Income'),
+  ),
+),
+
+const SizedBox(height: 8),
+
+SizedBox(
+  width: double.infinity,
+  child: OutlinedButton.icon(
+    onPressed: () {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => const RecurringBillsScreen(),
+        ),
+      );
+    },
+    icon: const Icon(Icons.repeat),
+    label: const Text('Recurring Bills'),
+  ),
+),
+
+const SizedBox(height: 24),
+
+const Text(
+  'Recent Transactions',
+  style: TextStyle(
+    fontSize: 20,
+    fontWeight: FontWeight.bold,
+  ),
+),
+
+const SizedBox(height: 12),
+
+TextField(
+  decoration: InputDecoration(
+    hintText: 'Search transactions',
+    prefixIcon: const Icon(Icons.search),
+    border: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+    ),
+  ),
+  onChanged: (value) {
+    setState(() {
+      searchQuery = value.toLowerCase();
+    });
+  },
+),
+
+const SizedBox(height: 12),
+
+DropdownButtonFormField<String>(
+  initialValue: selectedCategory,
+  decoration: InputDecoration(
+    labelText: 'Category',
+    border: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+    ),
+  ),
+  items: const [
+    DropdownMenuItem(
+      value: 'All',
+      child: Text('All Categories'),
+    ),
+    DropdownMenuItem(
+      value: 'Food',
+      child: Text('Food'),
+    ),
+    DropdownMenuItem(
+      value: 'Transport',
+      child: Text('Transport'),
+    ),
+    DropdownMenuItem(
+      value: 'Bills',
+      child: Text('Bills'),
+    ),
+    DropdownMenuItem(
+      value: 'Shopping',
+      child: Text('Shopping'),
+    ),
+    DropdownMenuItem(
+      value: 'Other',
+      child: Text('Other'),
+    ),
+  ],
+  onChanged: (value) {
+    setState(() {
+      selectedCategory = value!;
+    });
+  },
+),
+
+                const SizedBox(height: 12),
+
+                if (filteredExpenses.isEmpty)
+  SizedBox(
+    width: double.infinity,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+      SizedBox(height: 20),
+      Icon(
+        Icons.receipt_long_outlined,
+        size: 48,
+      ),
+      SizedBox(height: 12),
+      Text(
+  expenses.isEmpty
+      ? 'No expenses yet'
+      : 'No matching transactions',
+        style: TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+      SizedBox(height: 4),
+      Text(
+  expenses.isEmpty
+      ? 'Start tracking your spending by adding an expense.'
+      : 'Try changing your search or category filter.',
+  textAlign: TextAlign.center,
+  style: TextStyle(
+    color: Colors.grey,
+  ),
+),
+
+const SizedBox(height: 12),
+
+if (expenses.isEmpty)
+  ElevatedButton.icon(
+  onPressed: () async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const AddExpenseScreen(),
+      ),
+    );
+
+    setState(() {
+      expensesFuture = DatabaseHelper.getExpenses();
+      totalExpensesFuture = DatabaseHelper.getTotalExpenses();
+    });
+  },
+  icon: const Icon(Icons.add),
+  label: const Text('Add Expense'),
+),
+    ],
+  )
+  )
+else
+  ...filteredExpenses.map(
+    (expense) => ListTile(
+    leading: CircleAvatar(
+  child: Icon(
+    getCategoryIcon(expense['category']),
+  ),
+),
+    title: Text(expense['description']),
+    subtitle: Text(
+  '${expense['category']} · ${formatExpenseDate(expense['date'])}',
+),
+    trailing: Row(
+  mainAxisSize: MainAxisSize.min,
+  children: [
+    Text(
+      '- ${formatNaira((expense['amount'] as num).toDouble())}',
+      style: const TextStyle(
+        fontWeight: FontWeight.bold,
+      ),
+    ),
+    IconButton(
+      icon: const Icon(Icons.edit_outlined),
+      onPressed: () async {
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => AddExpenseScreen(
+              expense: expense,
+            ),
+          ),
+        );
+
+        setState(() {
+          expensesFuture = DatabaseHelper.getExpenses();
+          totalExpensesFuture = DatabaseHelper.getTotalExpenses();
+          categoryTotalsFuture = DatabaseHelper.getCategoryTotals();
+        });
+      },
+    ),
+    IconButton(
+      icon: const Icon(Icons.delete_outline),
+      onPressed: () async {
+  final confirm = await showDialog<bool>(
+    context: context,
+    builder: (context) {
+      return AlertDialog(
+        title: const Text('Are you sure you want to delete?'),
+        content: const Text(
+          'This action cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context, false);
+            },
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context, true);
+            },
+            child: const Text('Delete'),
+          ),
+        ],
+      );
+    },
+  );
+
+  if (confirm != true) return;
+
+  await DatabaseHelper.deleteExpense(expense['id']);
+
+  setState(() {
+    expensesFuture = DatabaseHelper.getExpenses();
+    totalExpensesFuture = DatabaseHelper.getTotalExpenses();
+    categoryTotalsFuture = DatabaseHelper.getCategoryTotals();
+  });
+},
+    ),
+  ],
+),
+  ),
+),
+              ],
+            ),
+          );
+        },
+      ),
+
+      floatingActionButton: FloatingActionButton(
+        onPressed: () async {
+          await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => const AddExpenseScreen(),
+            ),
+          );
+
+          setState(() {
+            expensesFuture = DatabaseHelper.getExpenses();
+            totalExpensesFuture = DatabaseHelper.getTotalExpenses();
+            categoryTotalsFuture = DatabaseHelper.getCategoryTotals();
+          });
+        },
+        child: const Icon(Icons.add),
+      ),
+    );
+  }
+}
+
+class AddExpenseScreen extends StatefulWidget {
+  final Map<String, dynamic>? expense;
+
+  const AddExpenseScreen({
+    super.key,
+    this.expense,
+  });
+
+  @override
+  State<AddExpenseScreen> createState() => _AddExpenseScreenState();
+}
+
+class _AddExpenseScreenState extends State<AddExpenseScreen> {
+  final amountController = TextEditingController();
+  final descriptionController = TextEditingController();
+
+  String selectedCategory = 'Food';
+
+  @override
+void initState() {
+  super.initState();
+
+  final expense = widget.expense;
+
+  if (expense != null) {
+    amountController.text = expense['amount'].toString();
+    descriptionController.text = expense['description'];
+    selectedCategory = expense['category'];
+  }
+}
+
+  Future<void> saveExpense() async {
+  final amount = double.tryParse(amountController.text);
+  final description = descriptionController.text.trim();
+
+  if (amount == null || description.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Please enter a valid amount and description'),
+      ),
+    );
+    return;
+  }
+
+  if (widget.expense == null) {
+    final expense = Expense(
+      amount: amount,
+      description: description,
+      category: selectedCategory,
+      date: DateTime.now(),
+    );
+
+    await DatabaseHelper.insertExpense(
+      expense.toMap(),
+    );
+    final totalSpent = await DatabaseHelper.getTotalExpenses();
+    final budget = await DatabaseHelper.getSavedBudget();
+
+    if (budget != null) {
+      await NotificationService.showBudgetAlert(
+        spent: totalSpent,
+        budget: budget,
+     );
+    }
+  } else {
+    final updatedExpense = {
+      'id': widget.expense!['id'],
+      'amount': amount,
+      'description': description,
+      'category': selectedCategory,
+      'date': widget.expense!['date'],
+    };
+
+    await DatabaseHelper.updateExpense(
+      updatedExpense,
+    );
+  }
+
+  if (!mounted) return;
+
+  Navigator.pop(context);
+}
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Add Expense'),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Amount',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+
+            const SizedBox(height: 8),
+
+            TextField(
+              controller: amountController,
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(
+                hintText: 'Enter amount',
+                prefixText: '₦ ',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 20),
+
+            const Text(
+              'Description',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+
+            const SizedBox(height: 8),
+
+            TextField(
+              controller: descriptionController,
+              decoration: InputDecoration(
+                hintText: 'What did you spend on?',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 20),
+
+            const Text(
+              'Category',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+
+            const SizedBox(height: 8),
+
+            DropdownButtonFormField<String>(
+              initialValue: selectedCategory,
+              decoration: InputDecoration(
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              items: const [
+                DropdownMenuItem(
+                  value: 'Food',
+                  child: Text('Food'),
+                ),
+                DropdownMenuItem(
+                  value: 'Transport',
+                  child: Text('Transport'),
+                ),
+                DropdownMenuItem(
+                  value: 'Bills',
+                  child: Text('Bills'),
+                ),
+                DropdownMenuItem(
+                  value: 'Shopping',
+                  child: Text('Shopping'),
+                ),
+                DropdownMenuItem(
+                  value: 'Other',
+                  child: Text('Other'),
+                ),
+              ],
+              onChanged: (value) {
+                setState(() {
+                  selectedCategory = value!;
+                });
+              },
+            ),
+
+            const Spacer(),
+
+            SizedBox(
+              width: double.infinity,
+              height: 52,
+              child: ElevatedButton(
+                onPressed: saveExpense,
+                child: const Text(
+                  'Save Expense',
+                  style: TextStyle(fontSize: 16),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class AddIncomeScreen extends StatefulWidget {
+  final Map<String, dynamic>? income;
+
+  const AddIncomeScreen({
+    super.key,
+    this.income,
+  });
+
+  @override
+  State<AddIncomeScreen> createState() => _AddIncomeScreenState();
+}
+
+class _AddIncomeScreenState extends State<AddIncomeScreen> {
+  final amountController = TextEditingController();
+  final descriptionController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+
+    if (widget.income != null) {
+      amountController.text = widget.income!['amount'].toString();
+      descriptionController.text = widget.income!['description'];
+    }
+  }
+
+  Future<void> saveIncome() async {
+    final amount = double.tryParse(amountController.text);
+    final description = descriptionController.text.trim();
+
+    if (amount == null || description.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Please enter a valid amount and description',
+          ),
+        ),
+      );
+      return;
+    }
+
+    if (widget.income != null) {
+      await DatabaseHelper.updateIncome({
+        'id': widget.income!['id'],
+        'amount': amount,
+        'description': description,
+        'date': widget.income!['date'],
+      });
+    } else {
+      final income = Income(
+        amount: amount,
+        description: description,
+        date: DateTime.now(),
+      );
+
+      await DatabaseHelper.insertIncome(
+        income.toMap(),
+      );
+    }
+
+    if (!mounted) return;
+
+    Navigator.pop(context);
+  }
+
+  @override
+  void dispose() {
+    amountController.dispose();
+    descriptionController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isEditing = widget.income != null;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          isEditing ? 'Edit Income' : 'Add Income',
+        ),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            TextField(
+              controller: amountController,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Amount',
+                prefixText: '₦',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: descriptionController,
+              decoration: const InputDecoration(
+                labelText: 'Description',
+                hintText: 'e.g. Allowance',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 24),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: saveIncome,
+                child: Text(
+                  isEditing ? 'Update Income' : 'Save Income',
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class IncomeScreen extends StatefulWidget {
+  const IncomeScreen({super.key});
+
+  @override
+  State<IncomeScreen> createState() => _IncomeScreenState();
+}
+
+class _IncomeScreenState extends State<IncomeScreen> {
+  late Future<List<Map<String, dynamic>>> incomeFuture;
+  late Future<double> totalIncomeFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    incomeFuture = DatabaseHelper.getIncome();
+    totalIncomeFuture = DatabaseHelper.getTotalIncome();
+  }
+
+  void refreshIncome() {
+    setState(() {
+      incomeFuture = DatabaseHelper.getIncome();
+      totalIncomeFuture = DatabaseHelper.getTotalIncome();
+    });
+  }
+
+  Future<void> deleteIncome(int id) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Are you sure you want to delete?'),
+          content: const Text(
+            'This action cannot be undone.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context, false);
+              },
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context, true);
+              },
+              child: const Text('Delete'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirm != true) return;
+
+    await DatabaseHelper.deleteIncome(id);
+
+    if (!mounted) return;
+
+    setState(() {
+      totalIncomeFuture = DatabaseHelper.getTotalIncome();
+      incomeFuture = DatabaseHelper.getIncome();
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
       appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
+        title: const Text('Income'),
       ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
+      body: FutureBuilder<List<Map<String, dynamic>>>(
+        future: incomeFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(
+              child: CircularProgressIndicator(),
+            );
+          }
+
+          final income = snapshot.data ?? [];
+
+          if (income.isEmpty) {
+            return const Center(
+              child: Text('No income recorded yet.'),
+            );
+          }
+
+          return ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: income.length,
+            itemBuilder: (context, index) {
+              final item = income[index];
+
+              return ListTile(
+                leading: const CircleAvatar(
+                  child: Icon(Icons.account_balance_wallet),
+                ),
+                title: Text(item['description']),
+                subtitle: Text(
+                  formatExpenseDate(item['date']),
+                ),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      '+ ${formatNaira((item['amount'] as num).toDouble())}',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.edit_outlined),
+                      onPressed: () async {
+                        await Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => AddIncomeScreen(
+                              income: item,
+                            ),
+                          ),
+                        );
+
+                        refreshIncome();
+                      },
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline),
+                      onPressed: () {
+                        deleteIncome(item['id']);
+                      },
+                    ),
+                  ],
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+}
+class RecurringBillsScreen extends StatefulWidget {
+  const RecurringBillsScreen({super.key});
+
+  @override
+  State<RecurringBillsScreen> createState() => _RecurringBillsScreenState();
+}
+
+class _RecurringBillsScreenState extends State<RecurringBillsScreen> {
+  late Future<List<Map<String, dynamic>>> billsFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    billsFuture = DatabaseHelper.getRecurringBills();
+  }
+
+  void refreshBills() {
+    setState(() {
+      billsFuture = DatabaseHelper.getRecurringBills();
+    });
+  }
+
+  Future<void> deleteBill(int id) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Are you sure you want to delete?'),
+          content: const Text(
+            'This action cannot be undone.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context, false);
+              },
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context, true);
+              },
+              child: const Text('Delete'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirm != true) return;
+
+    await NotificationService.cancelNotification(id);
+
+    await DatabaseHelper.deleteRecurringBill(id);
+
+    refreshBills();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Recurring Bills'),
+      ),
+      body: FutureBuilder<List<Map<String, dynamic>>>(
+        future: billsFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(
+              child: CircularProgressIndicator(),
+            );
+          }
+
+          final bills = snapshot.data ?? [];
+
+          if (bills.isEmpty) {
+            return const Center(
+              child: Text('No recurring bills added yet.'),
+            );
+          }
+
+          return ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: bills.length,
+            itemBuilder: (context, index) {
+              final bill = bills[index];
+
+              return ListTile(
+                leading: const CircleAvatar(
+                  child: Icon(Icons.repeat),
+                ),
+                title: Text(bill['description']),
+                subtitle: Text(
+                  '${bill['category']} · ${bill['frequency']}',
+                ),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      formatNaira(
+                        (bill['amount'] as num).toDouble(),
+                      ),
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.edit_outlined),
+                      onPressed: () async {
+                        await Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => AddRecurringBillScreen(
+                              bill: bill,
+                            ),
+                          ),
+                        );
+
+                        refreshBills();
+                      },
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline),
+                      onPressed: () {
+                        deleteBill(bill['id']);
+                      },
+                    ),
+                  ],
+                ),
+              );
+            },
+          );
+        },
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () async {
+          await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => const AddRecurringBillScreen(),
+            ),
+          );
+
+          refreshBills();
+        },
+        child: const Icon(Icons.add),
+      ),
+    );
+  }
+}
+class AddRecurringBillScreen extends StatefulWidget {
+  final Map<String, dynamic>? bill;
+
+  const AddRecurringBillScreen({
+    super.key,
+    this.bill,
+  });
+
+  @override
+  State<AddRecurringBillScreen> createState() =>
+      _AddRecurringBillScreenState();
+}
+
+class _AddRecurringBillScreenState extends State<AddRecurringBillScreen> {
+  final amountController = TextEditingController();
+  final descriptionController = TextEditingController();
+
+  String selectedCategory = 'Bills';
+  String selectedFrequency = 'Monthly';
+  DateTime selectedDate = DateTime.now();
+
+  @override
+  void initState() {
+    super.initState();
+
+    if (widget.bill != null) {
+      amountController.text = widget.bill!['amount'].toString();
+      descriptionController.text = widget.bill!['description'];
+      selectedCategory = widget.bill!['category'];
+      selectedFrequency = widget.bill!['frequency'];
+      selectedDate = DateTime.parse(widget.bill!['nextDueDate']);
+    }
+  }
+
+  Future<void> saveBill() async {
+  final amount = double.tryParse(amountController.text);
+  final description = descriptionController.text.trim();
+
+  if (amount == null || description.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Please enter a valid amount and description',
+        ),
+      ),
+    );
+    return;
+  }
+
+  final bill = {
+    'amount': amount,
+    'description': description,
+    'category': selectedCategory,
+    'frequency': selectedFrequency,
+    'nextDueDate': selectedDate.toIso8601String(),
+  };
+
+  int billId;
+
+  if (widget.bill != null) {
+  billId = widget.bill!['id'];
+
+  await NotificationService.cancelNotification(billId);
+
+  bill['id'] = billId;
+
+  await DatabaseHelper.updateRecurringBill(bill);
+}
+  else {
+    final recurringBill = RecurringBill(
+      amount: amount,
+      description: description,
+      category: selectedCategory,
+      frequency: selectedFrequency,
+      nextDueDate: selectedDate,
+    );
+
+    billId = await DatabaseHelper.insertRecurringBill(
+      recurringBill.toMap(),
+    );
+  }
+
+  await NotificationService.scheduleBillReminder(
+    id: billId,
+    description: description,
+    amount: amount,
+    dueDate: selectedDate,
+  );
+
+  if (!mounted) return;
+
+  Navigator.pop(context);
+}
+  Future<void> pickDate() async {
+    final pickedDate = await showDatePicker(
+      context: context,
+      initialDate: selectedDate,
+      firstDate: DateTime.now(),
+      lastDate: DateTime(2100),
+    );
+
+    if (pickedDate != null) {
+      setState(() {
+        selectedDate = pickedDate;
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    amountController.dispose();
+    descriptionController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isEditing = widget.bill != null;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          isEditing ? 'Edit Recurring Bill' : 'Add Recurring Bill',
+        ),
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
         child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: .center,
           children: [
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+            TextField(
+              controller: amountController,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Amount',
+                prefixText: '₦',
+                border: OutlineInputBorder(),
+              ),
+            ),
+
+            const SizedBox(height: 16),
+
+            TextField(
+              controller: descriptionController,
+              decoration: const InputDecoration(
+                labelText: 'Description',
+                hintText: 'e.g. Internet subscription',
+                border: OutlineInputBorder(),
+              ),
+            ),
+
+            const SizedBox(height: 16),
+
+            DropdownButtonFormField<String>(
+              initialValue: selectedCategory,
+              decoration: const InputDecoration(
+                labelText: 'Category',
+                border: OutlineInputBorder(),
+              ),
+              items: const [
+                DropdownMenuItem(
+                  value: 'Bills',
+                  child: Text('Bills'),
+                ),
+                DropdownMenuItem(
+                  value: 'Food',
+                  child: Text('Food'),
+                ),
+                DropdownMenuItem(
+                  value: 'Transport',
+                  child: Text('Transport'),
+                ),
+                DropdownMenuItem(
+                  value: 'Shopping',
+                  child: Text('Shopping'),
+                ),
+                DropdownMenuItem(
+                  value: 'Other',
+                  child: Text('Other'),
+                ),
+              ],
+              onChanged: (value) {
+                if (value != null) {
+                  setState(() {
+                    selectedCategory = value;
+                  });
+                }
+              },
+            ),
+
+            const SizedBox(height: 16),
+
+            DropdownButtonFormField<String>(
+              initialValue: selectedFrequency,
+              decoration: const InputDecoration(
+                labelText: 'Frequency',
+                border: OutlineInputBorder(),
+              ),
+              items: const [
+                DropdownMenuItem(
+                  value: 'Weekly',
+                  child: Text('Weekly'),
+                ),
+                DropdownMenuItem(
+                  value: 'Monthly',
+                  child: Text('Monthly'),
+                ),
+                DropdownMenuItem(
+                  value: 'Yearly',
+                  child: Text('Yearly'),
+                ),
+              ],
+              onChanged: (value) {
+                if (value != null) {
+                  setState(() {
+                    selectedFrequency = value;
+                  });
+                }
+              },
+            ),
+
+            const SizedBox(height: 16),
+
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Next Due Date'),
+              subtitle: Text(
+                formatExpenseDate(
+                  selectedDate.toIso8601String(),
+                ),
+              ),
+              trailing: OutlinedButton(
+                onPressed: pickDate,
+                child: const Text('Choose Date'),
+              ),
+            ),
+
+            const SizedBox(height: 24),
+
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: saveBill,
+                child: Text(
+                  isEditing ? 'Update Bill' : 'Save Bill',
+                ),
+              ),
             ),
           ],
         ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
       ),
     );
   }
